@@ -11,3 +11,6 @@ image = "0.25.5"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 indicatif = "0.17.11"
+ocrs = "0.10.0"
+rten = "0.16.0"
+clap-verbosity-flag = {  version = "3.0.2", features = ["tracing"] }

@@ -1,34 +1,70 @@
-use clap::Parser;
+use std::path::PathBuf;
+use clap::{Parser, Subcommand};
 use anyhow::{anyhow, Result};
+use clap_verbosity_flag::Verbosity;
 use ffmpeg_next::codec;
 use ffmpeg_next::media::Type;
 use ffmpeg_next::util::frame::video::Video;
 use image::{ImageBuffer, RgbImage};
 use indicatif::ProgressBar;
+use ocrs::ImageSource;
 use tracing::info;
+use tracing::debug;
 
 /// a program that finds title cards for a show about a blue dog
 #[derive(Parser)]
 struct Args {
-    #[clap(short, long)]
-    path: String,
+    #[clap(flatten)]
+    verbose: Verbosity,
 
-    #[clap(short, long)]
-    output: String,
+    #[clap(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    EpisodeName {
+        #[clap(short, long)]
+        path: String,
+
+        #[clap(short, long)]
+        output: String,
+    },
+    Ocr {
+        #[clap(short, long)]
+        path: String,
+    },
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
+        .with_max_level(args.verbose.tracing_level_filter())
         .init();
 
-    let blue_frame = extract_frames(&args.path)?;
+    match args.command {
+        Commands::EpisodeName { path, output } => episode_name(&path, &output),
+        Commands::Ocr { path } => ocr(&path),
+    }
+}
+
+fn ocr(path: &str) -> Result<()> {
+    let image = image::open(path)?.into_rgb8();
+    let name = get_episode_name(&image)?;
+    info!(name, "episode name");
+    Ok(())
+}
+
+fn episode_name(path: &str, output: &str) -> Result<()> {
+    let blue_frame = extract_frames(path)?;
 
     if let Some((frame, index)) = blue_frame {
         info!(index, "found a blue frame");
         // write frame to output
-        frame.save(&args.output)?;
+        frame.save(output)?;
+
+        let name = get_episode_name(&frame)?;
+        info!(name, "episode name");
     } else {
         info!("no blue frame found");
     }
@@ -115,4 +151,41 @@ fn is_blue_dominant(frame: &Video) -> Result<Option<RgbImage>> {
     }
 
     Ok(None)
+}
+
+fn file_path(path: &str) -> PathBuf {
+    let mut abs_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    abs_path.push(path);
+    abs_path
+}
+
+fn get_episode_name(frame: &RgbImage) -> Result<String> {
+    let detection_model_path = file_path("text-detection.rten");
+    let rec_model_path = file_path("text-recognition.rten");
+
+    let detection_model = rten::Model::load_file(detection_model_path)?;
+    let recognition_model = rten::Model::load_file(rec_model_path)?;
+
+    let engine = ocrs::OcrEngine::new(ocrs::OcrEngineParams {
+        detection_model: Some(detection_model),
+        recognition_model: Some(recognition_model),
+        ..Default::default()
+    })?;
+
+    let img_source = ImageSource::from_bytes(frame.as_raw(), frame.dimensions())?;
+    let ocr_input = engine.prepare_input(img_source)?;
+
+    let word_rects = engine.detect_words(&ocr_input)?;
+    debug!(len = word_rects.len(), "detected words");
+    let line_rects = engine.find_text_lines(&ocr_input, &word_rects);
+    debug!(len = line_rects.len(), "detected lines");
+    let line_texts = engine.recognize_text(&ocr_input, &line_rects)?;
+
+    let lines = line_texts.iter().flatten().map(|x| x.to_string()).filter(|x| x.len() > 1).collect::<Vec<_>>();
+    debug!("{:#?}", lines);
+    match &lines[..] {
+        [] => Err(anyhow!("No text detected")),
+        [text] => Ok(text.to_string()),
+        _ => Err(anyhow!("Multiple text detected")),
+    }
 }

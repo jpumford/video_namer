@@ -1,13 +1,15 @@
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
 use anyhow::{anyhow, Result};
 use clap_verbosity_flag::Verbosity;
 use ffmpeg_next::codec;
 use ffmpeg_next::media::Type;
 use ffmpeg_next::util::frame::video::Video;
+use glob::MatchOptions;
 use image::{ImageBuffer, RgbImage};
 use indicatif::ProgressBar;
+use inquire::Select;
 use ocrs::ImageSource;
 use tracing::info;
 use tracing::debug;
@@ -36,8 +38,7 @@ enum Commands {
         path: String,
     },
     RenameAll {
-        #[clap(short, long)]
-        folder: String,
+        pattern: String,
     },
 }
 
@@ -50,11 +51,40 @@ fn main() -> Result<()> {
     match args.command {
         Commands::EpisodeName { path, output } => episode_name(&path, &output),
         Commands::Ocr { path } => ocr(&path),
-        Commands::RenameAll { folder } => rename_all(&folder),
+        Commands::RenameAll { pattern } => rename_all(&pattern),
     }
 }
 
-fn rename_all(folder: &str) -> Result<()> {
+fn rename_all(pattern: &str) -> Result<()> {
+    let episodes = get_episode_names("bluey.csv")?;
+    let mut files = glob::glob_with(pattern, MatchOptions {
+        case_sensitive: false,
+        require_literal_separator: false,
+        require_literal_leading_dot: true,
+    })?.map(|x| x.map_err(|x| anyhow!(x.to_string()))).collect::<Result<Vec<_>>>()?;
+
+    let len = files.len();
+    for (i, file) in files.iter_mut().enumerate() {
+        info!("File {} of {}: {:?}", i, len, file);
+
+        let filename = file.file_name().map(|x| x.to_string_lossy()).ok_or(anyhow!("file has no file_name"))?;
+
+        let blue_frame = extract_frames(file)?;
+        if let Some((frame, _)) = blue_frame {
+            debug!("found a blue frame");
+            let name = get_episode_name(&frame)?;
+            debug!(name, "episode name");
+            let corrected = get_corrected_episode_name(&name, &episodes).unwrap();
+            debug!(corrected = corrected.name, "corrected episode name");
+
+            let new_filename = format!("Bluey - {} - {}.mkv", corrected.season_and_episode, corrected.name);
+            info!("Renaming {} to {}", filename, new_filename);
+            let new_path = file.parent().unwrap().join(new_filename);
+            std::fs::rename(file, new_path)?;
+        } else {
+            debug!("no blue frame found for {}", filename);
+        }
+    }
     Ok(())
 }
 
@@ -74,7 +104,7 @@ fn ocr(path: &str) -> Result<()> {
 }
 
 fn episode_name(path: &str, output: &str) -> Result<()> {
-    let blue_frame = extract_frames(path)?;
+    let blue_frame = extract_frames(Path::new(path))?;
 
     if let Some((frame, index)) = blue_frame {
         info!(index, "found a blue frame");
@@ -99,7 +129,7 @@ fn episode_name(path: &str, output: &str) -> Result<()> {
     Ok(())
 }
 
-fn extract_frames(filename: &str) -> Result<Option<(RgbImage, usize)>> {
+fn extract_frames(filename: &Path) -> Result<Option<(RgbImage, usize)>> {
     let mut ictx = ffmpeg_next::format::input(filename)?;
     let stream = ictx.streams().best(Type::Video).ok_or(anyhow!("Unable to decode"))?;
     let index = stream.index();
@@ -219,7 +249,10 @@ fn get_episode_name(frame: &RgbImage) -> Result<String> {
     match &lines[..] {
         [] => Err(anyhow!("No text detected")),
         [text] => Ok(text.to_string()),
-        _ => Err(anyhow!("Multiple text detected")),
+        options => {
+            Ok(Select::new("Choose an OCR option:", options.to_vec())
+                .prompt()?.to_string())
+        },
     }
 }
 

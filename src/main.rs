@@ -1,3 +1,4 @@
+use serde::Deserialize;
 use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use anyhow::{anyhow, Result};
@@ -34,6 +35,10 @@ enum Commands {
         #[clap(short, long)]
         path: String,
     },
+    RenameAll {
+        #[clap(short, long)]
+        folder: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -45,13 +50,26 @@ fn main() -> Result<()> {
     match args.command {
         Commands::EpisodeName { path, output } => episode_name(&path, &output),
         Commands::Ocr { path } => ocr(&path),
+        Commands::RenameAll { folder } => rename_all(&folder),
     }
+}
+
+fn rename_all(folder: &str) -> Result<()> {
+    Ok(())
 }
 
 fn ocr(path: &str) -> Result<()> {
     let image = image::open(path)?.into_rgb8();
     let name = get_episode_name(&image)?;
     info!(name, "episode name");
+    let episodes = get_episode_names("bluey.csv")?;
+    debug!(len = episodes.len(), "episodes loaded");
+    let lowest = episodes.iter().min_by_key(|episode| {
+        // TODO: other distances?
+        strsim::levenshtein(&episode.name, &name) as usize
+    }).ok_or(anyhow!("No episode found"))?;
+
+    info!(lowest.name, lowest.season_and_episode, "closest episode");
     Ok(())
 }
 
@@ -65,6 +83,15 @@ fn episode_name(path: &str, output: &str) -> Result<()> {
 
         let name = get_episode_name(&frame)?;
         info!(name, "episode name");
+
+        let episodes = get_episode_names("bluey.csv")?;
+        debug!(len = episodes.len(), "episodes loaded");
+        let lowest = episodes.iter().min_by_key(|episode| {
+            // TODO: other distances?
+            strsim::normalized_levenshtein(&episode.name, &name) as usize
+        }).ok_or(anyhow!("No episode found"))?;
+
+        info!(lowest.name, lowest.season_and_episode, "closest episode");
     } else {
         info!("no blue frame found");
     }
@@ -159,6 +186,12 @@ fn file_path(path: &str) -> PathBuf {
     abs_path
 }
 
+fn get_corrected_episode_name(candiate_name: &str, episodes: &[Episode]) -> Option<Episode> {
+    episodes.iter().min_by_key(|episode| {
+        strsim::levenshtein(&episode.name, candiate_name) as usize
+    }).cloned()
+}
+
 fn get_episode_name(frame: &RgbImage) -> Result<String> {
     let detection_model_path = file_path("text-detection.rten");
     let rec_model_path = file_path("text-recognition.rten");
@@ -188,4 +221,17 @@ fn get_episode_name(frame: &RgbImage) -> Result<String> {
         [text] => Ok(text.to_string()),
         _ => Err(anyhow!("Multiple text detected")),
     }
+}
+
+
+#[derive(Debug, Deserialize, Clone)]
+struct Episode {
+    name: String,
+    #[serde(rename = "season")]
+    season_and_episode: String,
+}
+
+fn get_episode_names(path: &str) -> Result<Vec<Episode>> {
+    let mut rdr = csv::Reader::from_reader(std::fs::File::open(path)?);
+    rdr.deserialize().collect::<csv::Result<Vec<Episode>>>().map_err(|e| anyhow!(e.to_string()))
 }

@@ -11,7 +11,7 @@ use image::{ImageBuffer, RgbImage};
 use indicatif::ProgressBar;
 use inquire::Select;
 use ocrs::ImageSource;
-use tracing::info;
+use tracing::{info, warn};
 use tracing::debug;
 
 /// a program that finds title cards for a show about a blue dog
@@ -76,13 +76,20 @@ fn rename_all(pattern: &str) -> Result<()> {
             debug!(name, "episode name");
             let corrected = get_corrected_episode_name(&name, &episodes).unwrap();
             debug!(corrected = corrected.name, "corrected episode name");
+            
+            info!("Correcting {} to {}", name, corrected.name);
 
             let new_filename = format!("Bluey - {} - {}.mkv", corrected.season_and_episode, corrected.name);
             info!("Renaming {} to {}", filename, new_filename);
             let new_path = file.parent().unwrap().join(new_filename);
+            // check to see if there is already a destination file
+            if new_path.exists() {
+                warn!("Destination file already exists, skipping");
+                continue;
+            }
             std::fs::rename(file, new_path)?;
         } else {
-            debug!("no blue frame found for {}", filename);
+            warn!("no blue frame found for {}", filename);
         }
     }
     Ok(())

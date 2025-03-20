@@ -5,7 +5,7 @@ use ffmpeg_next::media::Type;
 use ffmpeg_next::util::frame::video::Video;
 use image::{ImageBuffer, RgbImage};
 use indicatif::ProgressBar;
-use log::info;
+use tracing::info;
 
 /// a program that finds title cards for a show about a blue dog
 #[derive(Parser)]
@@ -19,12 +19,14 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .init();
 
     let blue_frame = extract_frames(&args.path)?;
 
     if let Some((frame, index)) = blue_frame {
-        info!("found a blue frame at frame count {}", index);
+        info!(index, "found a blue frame");
         // write frame to output
         frame.save(&args.output)?;
     } else {
@@ -77,14 +79,12 @@ fn extract_frames(filename: &str) -> Result<Option<(RgbImage, usize)>> {
         if stream.index() == index {
             decoder.send_packet(&packet)?;
             if let Some(blue_frame) = receive_and_process_decoded_frames(&mut decoder)? {
-                bar.finish();
                 return Ok(Some(blue_frame));
             }
         }
     }
     decoder.send_eof()?;
     if let Some(blue_frame) = receive_and_process_decoded_frames(&mut decoder)? {
-        bar.finish();
         return Ok(Some(blue_frame));
     }
 

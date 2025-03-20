@@ -14,6 +14,8 @@ use ocrs::ImageSource;
 use tracing::{info, warn};
 use tracing::debug;
 
+const FPS: usize = 24;
+
 /// a program that finds title cards for a show about a blue dog
 #[derive(Parser)]
 struct Args {
@@ -76,7 +78,7 @@ fn rename_all(pattern: &str) -> Result<()> {
             debug!(name, "episode name");
             let corrected = get_corrected_episode_name(&name, &episodes).unwrap();
             debug!(corrected = corrected.name, "corrected episode name");
-            
+
             info!("Correcting {} to {}", name, corrected.name);
 
             let new_filename = format!("Bluey - {} - {}.mkv", corrected.season_and_episode, corrected.name);
@@ -156,13 +158,13 @@ fn extract_frames(filename: &Path) -> Result<Option<(RgbImage, usize)>> {
 
 
     let mut frame_index = 0;
-    let bar = ProgressBar::new(14400);
+    let bar = ProgressBar::new((7 * 60 * FPS) as u64);
 
     let mut receive_and_process_decoded_frames =
         |decoder: &mut ffmpeg_next::decoder::Video| -> Result<Option<(RgbImage, usize)>> {
             let mut decoded = Video::empty();
             while decoder.receive_frame(&mut decoded).is_ok() {
-                if frame_index > 900 && frame_index % 30 == 0 {
+                if frame_index > (28 * FPS) && frame_index % FPS == 0 {
                     let mut rgb_frame = Video::empty();
                     scaler.run(&decoded, &mut rgb_frame)?;
                     if let Some(img) = is_blue_dominant(&rgb_frame)? {
@@ -204,7 +206,7 @@ fn is_blue_dominant(frame: &Video) -> Result<Option<RgbImage>> {
 
     for pixel in img.pixels() {
         let [r, g, b] = pixel.0;
-        if b > 230 && r < 180 && g < 235 { // Simple blue detection
+        if b > 220 && r < 180 && g < 235 { // Simple blue detection
             blue_pixels += 1;
         }
         total_pixels += 1;
